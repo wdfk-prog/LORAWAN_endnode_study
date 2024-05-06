@@ -86,11 +86,11 @@
 
 - 该接收器具有自动 I 和 Q 校准功能，可改善镜像抑制。校准在使用接收器之前启动时自动完成，并且可以通过命令请求。
 
-## 1.7 RF-PLL
+## 1.7 锁相环RF-PLL
 
 - RF-PLL 用作频率合成器，用于生成发送和接收链的本地振荡器频率 (flo)。 RF-PLL 使用自动校准并使用 32 MHz HSE32 参考。 Sub-GHz 无线电覆盖 150 至 960 MHz 范围内的所有连续频率
 
-## 1.8 Intermediate frequencies
+## 1.8 中频
 
 ![image-20240407165045937](readme.assets/image-20240407165045937.png)
 
@@ -158,3 +158,308 @@
 - **隐式标头模式**
 
   在有效负载编码率和CRC存在是固定的或预先已知的某些操作模式中，通过调用隐式标头模式来减少传输时间可能是有利的。在此模式下，数据包帧中不存在标头。必须在 sub-GHz 无线电链路的两侧配置有效负载长度、前向纠错编码率和有效负载 CRC 的存在。
+
+### 1.9.6 LoRa 空中传播时间
+
+- 数据包的总传输时间可计算如下： TotalTimeOnAir = (PreambleSymbols + NbSymbolPayload + 4.25 + 8) x (2SF/ BW) 
+- 其中 PreambleSymbols 是 Set_PacketParams(PbLength) 中编程的前导码符号数。
+- 有效负载符号的数量可以计算如下： NbSymbolPayload = CEILING(NbSymbolPayloadFrac,4 + CR) 其中 CEILING 是向上舍入到紧邻第一个小数参数的 (4 + CR) 整数倍的函数。
+- 显示模式下有效负载小数符号的数量可计算如下： NbSymbolPayloadFrac = ((PL x 8 + CRC x 16 - 4 x (SF - 7)) x (4 + CR)) / (4 x SF)
+- 隐式模式下有效负载小数符号的数量可计算如下： NbSymbolPayloadFrac = ((PL x 8 + CRC x 16 - 4 x (SF - 2)) x (4 + CR)) / (4 x SF) 
+- 其中： 
+  - CRC = 0（无 CRC）或 1（16 位 CRC）
+  - CR = 0 至 4 • PL = 1 至 255，用户数据有效负载长度（以字节为单位
+  - SF = 7 至 12 扩频因子 
+
+原始数据速率= ((SF x BW) / 2SF) x (4 / (4 + CR)) 
+
+实际数据速率= (PayloadLength x 8) / TotalTimeOnAir
+
+### 1.9.7 通道活动检测 (CAD)
+- 信道活动检测用于通过检测 LoRa 前导码或数据符号来检测 LoRa 信号的存在。
+- 一旦进入通道活动检测模式，就会按照 Set_CadParams() 命令中设置的确定持续时间扫描频段。如果在此期间检测到 LoRa 符号，则设置检测到的通道活动 IRQ。
+- 执行通道活动检测所需的时间取决于 LoRa 调制设置。对于给定的 SF/BW，典型的 CAD 检测时间可以选择为 1、2、4、8 或 16 个符号。 CAD持续时间进一步延长了半个符号。
+
+## 1.10 Sub-GHz 无线电数据缓冲区
+- Sub-GHz 无线电使用 256 字节 RAM 数据缓冲区，在**除睡眠和深度睡眠**之外的所有 Sub-GHz 无线电操作模式下，CPU 均可通过 SUBGHZSPI 接口访问该缓冲区。 RAM 数据缓冲区在深度睡眠模式下被清除，可以选择在睡眠模式下保留，并在所有其他模式下始终保留。在睡眠和深度睡眠模式下，TxBaseAddr 和 RxBaseAddr 值会丢失。为了在睡眠模式保留后检索数据，必须使用默认值（TxBaseAddr = 0x80 和 RxBaseAddr = 0x00），或者 RxPayloadLength 和 RxStartBufferPointer 必须存储在 CPU 内存中。
+
+![image-20240419145438994](readme.assets/image-20240419145438994.png)
+
+## 1.11 Sub-GHz 无线电操作模式
+- Sub-GHz 无线电重置后，将启动启动阶段。由于在此阶段 BUSY 处于活动状态，因此无法接受命令。当 subGHz 无线电的电源和时钟可用时，BUSY 被停用，CPU 可以进行控制。在启动阶段之后，可以选择以下操作模式之一：
+
+### 睡眠模式
+
+- 深度睡眠：所有 sub-GHz 无线电时钟均关闭，数据存储器丢失 
+- RC 13 MHz 时钟关闭 
+- RC 64 kHz 和定时器可保持运行（可选） 
+
+- 保留可选寄存器和数据存储器
+
+- Set_Sleep() 命令后，Sub-GHz 无线电无法接收任何 SPI 命令。用户必须保证 sub-GHz 无线电 SPI NSS 在 500 μs 期间不会设置为低电平。
+
+可以通过以下方式退出睡眠模式： • 根据通过 sub-GHz 无线电 SPI NSS 信号发出的固件请求（使 sub-GHz 无线电 SPI NSS 保持低电平至少 20 μs） • 根据来自 sub-GHz 无线电 RTC 定时器的请求，生成一个计数结束事件（对应于占空比操作） 当保留 sub-GHz 无线电配置寄存器时，退出休眠模式时会执行热启动。在热启动期间，配置寄存器将恢复其保留值，并跳过校准状态。
+
+### 校准模式
+### 待机模式
+### 活动模式
+
+### HSE32 待机模式
+
+### 深度睡眠模式
+
+![image-20240419172221033](readme.assets/image-20240419172221033.png)
+
+### 主动模式切换时间
+
+- 所有写命令均激活 BUSY。对于读命令，BUSY 保持低电平。
+- 切换时间 (tSWMODE) 定义为处理命令或达到稳定工作模式的时间，从 sub-GHz 无线电 SPI NSS 上升沿开始，结束 SPI 命令事务，直到 BUSY 变为非活动状态。在 1 GHz 以下无线电 SPI NSS 上升沿、结束 SPI 命令事务和设置 BUSY 之间有一个小的延迟 (tSW)。 tSW 的最长时间为 600 ns。
+
+![image-20240422095417396](readme.assets/image-20240422095417396.png)
+
+## 1.12 Sub-GHz 无线电 SPI 接口
+
+- 对于每次访问，sub-GHz 无线电 SPI NSS 在传输开始时变低，并在所有字节传输完毕后在结束时设置为高。
+
+支持以下事务类型： 
+
+- 配置事务：为CPU 提供对控制寄存器的直接访问。
+
+用于写入或读取 sub-GHz 无线电配置寄存器或缓冲存储器。
+
+- 命令事务：需要更复杂的非原子操作，例如数据包传输和接收或操作模式更改 BUSY 用于指示 sub-GHz 无线电的状态及其接收 SPI 事务的能力（或不能力）。在发出新的 SPI 事务之前，CPU 必须检查 BUSY 状态，以确保 sub-GHz 无线电可以接收新的事务。
+
+### Set_PaConfig() command
+
+![image-20240422101444953](readme.assets/image-20240422101444953.png)
+
+# 2. LORAWAN
+
+## 2.1 初始化
+
+- 引脚初始化: ANT_RX_CTRL ANT_TX_CTRL
+
+  - RF_SW_CTRL3：这个引脚在所有的模式下都被设置为高电平（GPIO_PIN_SET），除了关闭射频开关的模式（RADIO_SWITCH_OFF）。
+
+- SUBGHZ初始化
+
+## 2.2 LoRaWAN_Init
+
+- 初始化LmHandler `LmHandlerInit`
+  - 注册回调函数
+  - 初始化和激活标准协议包 `PACKAGE_ID_COMPLIANCE`
+  - 如果启用`额外的LoRaWAN包`,则注册
+
+应用层时钟同步（包ID：1，默认端口：202）
+远程组播设置（包 ID：2，默认端口：200）
+碎片数据块传输（包ID：3，默认端口：201）
+固件管理协议（包 ID：4，默认端口：203）
+
+- 初始化地区参数 `LoraInfo_Init`
+  - 可根据不同地区进行配置
+  - https://www.thethingsnetwork.org/docs/lorawan/frequency-plans/
+  - https://docs.chirpwireless.io/LoRaWAN/frequencies/#n
+  - 默认情况下启用一个地区占用ROM:3.08KB RAM:0.316KB
+
+## 2.3 Package
+
+- PACKAGE_ID_CLOCK_SYNC：这是时钟同步功能包。这个功能包提供了一种应用层消息包，可以通过LoRaWAN®将终端设备的实时时钟与网络时间同步，精度接近秒。这对于没有其他准确时间源的终端设备非常有用。
+- PACKAGE_ID_REMOTE_MCAST_SETUP：这是远程多播设置功能包。这个功能包定义了一种应用层消息包，允许在一组终端设备中编程一个多播分发窗口，并且临时启用Class B或Class C，然后将它们恢复到原始操作。
+- PACKAGE_ID_FRAGMENTATION：这是数据块分片传输功能包。这个功能包提供了一种应用层消息包，可以在LoRaWAN®上创建和管理分片传输会话，并向一个或多个终端设备发送一个分片的数据块。
+- PACKAGE_ID_FIRMWARE_MANAGEMENT：这是固件管理功能包。这个文档指定了固件和硬件版本管理，设备在给定时间重启以及固件升级图像管理的命令。
+
+### 2.3.1 Compliance
+
+#### 初始化
+- 注册回调函数,缓存区域
+- 初始化`ProcessTimer`定时器
+- 复位参数
+
+### 2.4 参数配置
+
+- 配置地区,类型,ADR,数据速率,默认类,周期性ping槽,占空比控制
+- 配置dev_eui,Join server EUI
+- `LmHandlerConfigure`
+  - LoRaMacInitialization
+  - 如果数据保留可用，请尝试从备份 RAM 结构恢复上下文
+  - 安全元件初始化 MCU ID
+
+- 单通道模式配置
+- 设置LoRaWAN通道掩码,发送速率, 发送功率,占空比
+OTAA:Application root key,Network root key
+ABP:Application session key,Network session key,DevAddr,NetworkID
+- 设置接收窗口C通道
+- 网络终端设备激活`MIB_NETWORK_ACTIVATION`
+
+
+## 2.5 LoRaMac事件
+
+### 2.5.1 LoRaMacInitialization
+- 验证该地区是否受支持
+- 确认队列重置
+- 初始化模块上下文
+- 重置为默认值
+- 初始化地区的通道掩码和通道
+- 初始化定时器 TxDelayedTimer,RxWindowTimer1,RxWindowTimer2,AckTimeoutTimer,RetransmitTimeoutTimer
+- 存储当前初始化时间
+- 初始化无线电驱动程序`RadioInit`
+- 初始化安全元件驱动程序
+- 初始化加密模块
+- 初始化MAC命令模块(初始化链表)
+- 随机种子初始化
+- 启用执行请求
+
+### 2.5.2 MAC IRQ 事件
+
+- 事件通过不同中断回调设置赋值
+
+#### 2.5.3.1 TxDone
+- 不是CLASS C,发送后进入睡眠模式
+- 设置RX窗口1,2定时器
+- CLASS C或者ACK包,设置ACK超时定时器
+#### 2.5.3.2 RxDone
+#### 2.5.3.3 TxTimeout
+#### 2.5.3.4 RxError
+#### 2.5.3.5 RxTimeout
+
+
+## 2.6 Radio事件
+### 2.6.1 初始化
+- 注册回调事件
+- RadioInit
+  
+  - SUBGRF_Init
+    - SMPS 时钟检测启用
+    - 将默认 SMPS 当前驱动器设置为默认
+    - MX_SUBGHZ_Init
+    - 将radio置于待机模式
+    - 初始化 TCXO 控制:  校准给定的无线电块
+    - 初始化IO引脚
+  
+  - 设置电源调节器工作模式
+  - RadioSleep
+  - 初始化定时器 TxTimeoutTimer,RxTimeoutTimer,TxTimeoutTimer,RxTimeoutTimer
+### 2.6.2 RadioIrq
+
+#### 2.6.2.2 IRQ_TX_DONE
+
+- 停止TX超时定时器
+- 设置radio为待机模式
+- 执行回调函数TxDone `MacCtx.RadioEvents.TxDone `
+MacCtx.RadioEvents.TxDone
+- MacProcessNotify [暂无使用]
+- 发送完成钩子函数，用于TxTimeout异常容错机制
+
+#### 2.6.2.3 IRQ_RX_DONE
+
+- 停止RX超时定时器
+- 不是连续接收(CLASS C)
+  - 设置radio为待机模式
+  - 隐式标头模式下的意外超时行为解决
+- 读取收到的有效负载和数据包状态[Rssi,Snr.SignalRssi.FreqError]
+- 执行回调函数RxDone `MacCtx.RadioEvents.RxDone `
+
+#### 2.6.2.7 IRQ_HEADER_ERROR
+
+- RxTimeout
+
+#### 2.6.2.11 IRQ_RX_TX_TIMEOUT
+
+- RxTimeout
+- TxTimeout
+
+#### 2.6.2.8 IRQ_CRC_ERROR
+
+- RxError
+
+#### 2.6.2.4 IRQ_PREAMBLE_DETECTED
+
+- PRE OK
+- 当检测到前导码时，超时将停止，并且必须使用等于 2 × RxPeriod + SleepPeriod 的值重新启动。
+
+#### 2.6.2.5 IRQ_SYNCWORD_VALID
+
+- SYNC OK
+
+#### 2.6.2.6 IRQ_HEADER_VALID
+
+- HDR OK
+
+#### 2.6.2.9 (通道活动检测)IRQ_CAD_CLEAR| IRQ_CAD_DETECTED
+
+### 2.6.3 SubGHz IRQ Handler
+
+- 容错机制
+  - 进入中断,中断触发源都为0,认为异常
+  - 1000次异常,关闭中断,发送错误标志
+- 正常只进行中断回调处理
+
+# 3. module lora
+
+## 3.1 subghz_error
+- 触发机制:SubGHz IRQ 异常;LoRaMacTxTimeout
+
+- 重载subghz模块3次失败,重启设备
+- 进行3次尝试LoRaMacStop
+- LoRaMacHandleMcpsRequest中`Stop retransmission`
+
+```c
+if(g_subghz_error) {
+    LoRaMacStatus_t ret = LORAMAC_STATUS_ERROR;
+    uint8_t timeout = 3;
+
+    if(g_subghz_error == 1) {
+        LoRaMacAbortProcess();
+        g_subghz_error++;
+        return;
+    } else if(g_subghz_error < 10) {
+        g_subghz_error++;
+        return;
+    }
+
+    g_subghz_error = 0;
+    s_subghz_error_count++;
+
+    lora_printf("===subghz reinit[%lu] ...\r\n", s_subghz_error_count);
+
+    if(s_subghz_error_count > 3) {
+        s_subghz_error_count = 0;
+        device_restart();
+    }
+
+    while(timeout--) {
+        ret = LoRaMacStop();
+        if(ret == LORAMAC_STATUS_OK) {
+            break;
+        }
+        HAL_Delay(1000);
+    }
+
+    UTILS_ENTER_CRITICAL_SECTION();
+
+    __HAL_RCC_SUBGHZ_FORCE_RESET();
+    __HAL_RCC_SUBGHZ_RADIO_FORCE_RESET();
+
+    for(uint16_t i = 0; i < 1000; i++) {
+        __NOP();
+    }
+
+    __HAL_RCC_SUBGHZ_RELEASE_RESET();
+    __HAL_RCC_SUBGHZ_RADIO_RELEASE_RESET();
+
+    HAL_SUBGHZ_DeInit(&hsubghz);
+
+    if(ret != LORAMAC_STATUS_OK) {
+        HAL_SUBGHZ_Init(&hsubghz);
+        s_lora_reload = true;
+    } else {
+        LoRaMacClassBHaltBeaconing();
+        LoRaMacRadioReinit();
+        LoRaMacStart();
+        LoRaMacClassBResumeBeaconing();
+        unxx_lora_insert_data(s_lora_buf.data, s_lora_buf.length, s_lora_buf.port, s_lora_buf.confirm);
+    }
+
+    UTILS_EXIT_CRITICAL_SECTION();
+}
+```
