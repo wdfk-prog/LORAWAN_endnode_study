@@ -261,20 +261,6 @@
   - https://docs.chirpwireless.io/LoRaWAN/frequencies/#n
   - 默认情况下启用一个地区占用ROM:3.08KB RAM:0.316KB
 
-## 2.3 Package
-
-- PACKAGE_ID_CLOCK_SYNC：这是时钟同步功能包。这个功能包提供了一种应用层消息包，可以通过LoRaWAN®将终端设备的实时时钟与网络时间同步，精度接近秒。这对于没有其他准确时间源的终端设备非常有用。
-- PACKAGE_ID_REMOTE_MCAST_SETUP：这是远程多播设置功能包。这个功能包定义了一种应用层消息包，允许在一组终端设备中编程一个多播分发窗口，并且临时启用Class B或Class C，然后将它们恢复到原始操作。
-- PACKAGE_ID_FRAGMENTATION：这是数据块分片传输功能包。这个功能包提供了一种应用层消息包，可以在LoRaWAN®上创建和管理分片传输会话，并向一个或多个终端设备发送一个分片的数据块。
-- PACKAGE_ID_FIRMWARE_MANAGEMENT：这是固件管理功能包。这个文档指定了固件和硬件版本管理，设备在给定时间重启以及固件升级图像管理的命令。
-
-### 2.3.1 Compliance
-
-#### 初始化
-- 注册回调函数,缓存区域
-- 初始化`ProcessTimer`定时器
-- 复位参数
-
 ### 2.4 参数配置
 
 - 配置地区,类型,ADR,数据速率,默认类,周期性ping槽,占空比控制
@@ -677,11 +663,16 @@ LoRaMacEnableRequests( LORAMAC_REQUEST_HANDLING_ON );
 
 3. 具有`MlmeReq` -> 执行`MlmeConfirm`
 
+#### 2.5.4.3 LoRaMacHandleScheduleUplinkEvent
 
+#### 2.5.4.4 LoRaMacHandleIndicationEvents
 
-### 2.5.X LoRaMacParser
+1. MacMlmeIndication
+2. MacMcpsIndication
 
-#### 2.5.3.1 LoRaMacParserData
+### 2.5.5 LoRaMacParser
+
+#### 2.5.5.1 LoRaMacParserData
 
 图6.PHY载荷结构
 
@@ -791,7 +782,7 @@ N应该小于等于：
 N <= M - 1 - (FHDR长度)
 M是MAC载荷的最大长度。
 
-### 2.5.X ProcessMacCommands
+### 2.5.6 ProcessMacCommands
 
 <table>
    <tr>
@@ -940,9 +931,9 @@ M是MAC载荷的最大长度。
 </table>
 表4：MAC命令表
 
-#### 2.5.4.1 SRV_MAC_RESET_CONF 0x01
+#### 2.5.6.1 SRV_MAC_RESET_CONF 0x01
 
-#### 2.5.4.2 SRV_MAC_LINK_CHECK_ANS 0x02
+#### 2.5.6.2 SRV_MAC_LINK_CHECK_ANS 0x02
 
 - LinkCheckReq的回复。包含接收信号强度，告知终端接收质量
 - 设置DemodMargin Demodulation margin. Contains the link margin [dB] of the last
@@ -973,27 +964,104 @@ M是MAC载荷的最大长度。
 
 - 该命令可以用于确认是否与网关保持连接
 
-#### 2.5.4.3 SRV_MAC_LINK_ADR_REQ 0x03
+#### 2.5.6.3 SRV_MAC_LINK_ADR_REQ 0x03
 
 - 根据地区处理ADR请求
 - 成功则进行`MOTE_MAC_LINK_ADR_ANS`MAC发送
 
 ![image-20240509151142063](readme.assets/image-20240509151142063.png)
 
-#### 2.5.4.4 接收窗口参数 SRV_MAC_RX_PARAM_SETUP_REQ 0x05
+#### 2.5.6.4 接收窗口参数 SRV_MAC_RX_PARAM_SETUP_REQ 0x05
 
 ![image-20240509152253416](readme.assets/image-20240509152253416.png)
 
-#### 2.5.4.7 信道的创建和修改 SRV_MAC_NEW_CHANNEL_REQ 0x07
+#### 2.5.6.7 信道的创建和修改 SRV_MAC_NEW_CHANNEL_REQ 0x07
 
 ![image-20240509152035395](readme.assets/image-20240509152035395.png)
 
-
-#### 2.5.4.11 SRV_MAC_DEVICE_TIME_ANS 0x0D
+#### 2.5.6.11 SRV_MAC_DEVICE_TIME_ANS 0x0D
 
 ![image-20240509152523916](readme.assets/image-20240509152523916.png)
 
-#### 2.5.4.4 其他未使用
+#### 2.5.6.4 其他未使用
+
+### 2.5.7 MACState
+
+```c
+/*!
+ * LoRaMac internal states
+ */
+enum eLoRaMacState
+{
+    LORAMAC_IDLE          = 0x00000000,
+    LORAMAC_STOPPED       = 0x00000001,
+    LORAMAC_TX_RUNNING    = 0x00000002,
+    LORAMAC_RX            = 0x00000004,
+    LORAMAC_ACK_RETRY     = 0x00000010,
+    LORAMAC_TX_DELAYED    = 0x00000020,
+    LORAMAC_TX_CONFIG     = 0x00000040,
+    LORAMAC_RX_ABORT      = 0x00000080,
+};
+```
+
+#### 2.5.7.1 IDLE
+
+0. 由`LoRaMacStart`触发,
+1. 在`LoRaMacProcess`中当`MacDone`==1时
+   1. `LoRaMacHandleRequestEvents`中,更新req事件,执行`McpsConfirm`,`MlmeConfirm`
+   2. `LoRaMacHandleScheduleUplinkEvent`中,执行设置mlme调度上行链路指示
+2. `MacDone==1`的触发情况为触发了`LoRaMacHandleIrqEvents`中判断;
+3. `macdone`//MAC循环完成标志
+
+#### 2.5.7.2 STOPPED
+
+1. 由`LoRaMacStop`触发
+2. `LoRaMacInitialization`时设置为`STOP`
+
+#### 2.5.7.3 TX_RUNNING
+
+- 触发
+  1. 发送过程
+  2. `SendFrameOnChannel`
+  3. `SetTxContinuousWave` `SetTxContinuousWave1`
+
+- 清除
+  1. `MacDone == 1` 后执行
+    1. `MlmeRequest`
+    2. `LoRaMacCheckForBeaconAcquisition`
+    3. `LoRaMacCheckForRxAbort`
+  2. `StopRetransmission`
+
+#### 2.5.7.4 LORAMAC_TX_DELAYED
+
+- 触发
+  1. `ScheduleTx`中选择频道失败原因为`LORAMAC_STATUS_DUTYCYCLE_RESTRICTED`时
+
+- 清除
+  1. `LoRaMacHandleIndicationEvents` 中 `stopRetransmission == 1`时
+  2. `OnTxDelayedTimerEvent`
+
+
+#### 2.5.7.5 LORAMAC_RX_ABORT
+
+- 触发
+  1. `PrepareRxDoneAbort`
+
+- 清除
+  1. `LoRaMacCheckForRxAbort`
+
+#### 2.5.7.6 其他
+
+### 2.5.8 LoRaMacIsBusy
+
+```
+    if( ( MacCtx.MacState == LORAMAC_IDLE ) &&
+        ( MacCtx.AllowRequests == LORAMAC_REQUEST_HANDLING_ON ) )
+    {
+        return false;
+    }
+    return true;
+```
 
 
 
@@ -1072,14 +1140,37 @@ MacCtx.RadioEvents.TxDone
 
 ## 2.7 LmHandler
 
-### 2.7.1 MlmeConfirm
+1. LmHandlerInit 初始化
+2. LmHandlerProcess 执行 mac处理 和 包管理任务
 
-#### 2.7.1.1 MLME_JOIN
+### 2.7.1 package
 
-1. 获取DevAddr
-2. 设置当前数据速率
-3. 更改CLASS类型
+#### 2.7.1.1 Register
 
+- 使用工厂模式设计思想,进行分层:https://www.runoob.com/design-pattern/factory-pattern.html
+- 参考 [LoRaWAN_Init](#2.2 LoRaWAN_Init)
+
+> - PACKAGE_ID_CLOCK_SYNC：这是时钟同步功能包。这个功能包提供了一种应用层消息包，可以通过LoRaWAN®将终端设备的实时时钟与网络时间同步，精度接近秒。这对于没有其他准确时间源的终端设备非常有用。
+> - PACKAGE_ID_REMOTE_MCAST_SETUP：这是远程多播设置功能包。这个功能包定义了一种应用层消息包，允许在一组终端设备中编程一个多播分发窗口，并且临时启用Class B或Class C，然后将它们恢复到原始操作。
+> - PACKAGE_ID_FRAGMENTATION：这是数据块分片传输功能包。这个功能包提供了一种应用层消息包，可以在LoRaWAN®上创建和管理分片传输会话，并向一个或多个终端设备发送一个分片的数据块。
+> - PACKAGE_ID_FIRMWARE_MANAGEMENT：这是固件管理功能包。这个文档指定了固件和硬件版本管理，设备在给定时间重启以及固件升级图像管理的命令。
+
+#### 2.7.12.2 Compliance 实现 LoRa-Alliance 认证协议处理
+
+
+
+#### 2.7.1.3 ClockSync
+
+#### 2.7.1.4 RemoteMcastSetup
+
+#### 2.7.1.5 Fragmentation
+
+#### 2.7.12.6 FirmwareManagement
+
+### 2.7.2 LmHandlerSend
+
+1. 执行验证
+2. `LoRaMacMcpsRequest` -> `Send` -> `ScheduleTx`
 
 
 # 3. module lora
@@ -1151,3 +1242,53 @@ if(g_subghz_error) {
     UTILS_EXIT_CRITICAL_SECTION();
 }
 ```
+## 3.2 状态机
+
+### 3.2.1 DEVICE_STATE_START
+1. lora 重载后设置为`DEVICE_STATE_START`
+2. OTAA入网成功后设置为`DEVICE_STATE_START`
+
+- `DEVICE_STATE_START`状态下
+  1. 查询入网状态
+  2. 成功入网后设置为`DEVICE_STATE_SEND`
+  3. 未入网则设置为`DEVICE_STATE_JOIN`
+
+### 3.2.2 DEVICE_STATE_JOIN
+1. ACTIVATION_TYPE_ABP -> `LmHandlerJoin`入网 -> 转入`DEVICE_STATE_SEND`
+2. ACTIVATION_TYPE_OTAA -> `LmHandlerJoin`入网 -> 转入`DEVICE_STATE_CYCLE`
+
+### 3.2.3 DEVICE_STATE_CYCLE
+1. OTAA Join成功后设置为`DEVICE_STATE_CYCLE`
+2. 发送后设置为`DEVICE_STATE_CYCLE`
+
+- 设置为`DEVICE_STATE_SLEEP`
+  1. 未入网
+    - 执行重新入网流程
+  2. 未发送数据
+    - 执行重新发送数据流程
+
+### 3.2.4 DEVICE_STATE_SLEEP
+- 进入低功耗
+
+### 3.2.5 DEVICE_STATE_SEND
+1. 从队列获取数据
+2. 链路检测机制
+3. 发送数据
+
+# 4.CLASS B
+## 4.1 初始化
+1. 注册回调函数
+2. 初始化定时器 `BeaconTimer` `PingSlotTimer` `MulticastSlotTimer`
+3.
+
+## 4.2 Process
+### 4.2.1 Beacon
+1. BeaconTimer回调中`Beacon`置位1
+2. `LoRaMacClassBProcess`中`Beacon`为1时执行`LoRaMacClassBProcessBeacon`函数
+3. 执行状态机
+4. 根据`activateTimer` 决定是否开启 `BeaconTimer`
+
+#### 4.2.1.1 BEACON_STATE_ACQUISITION_BY_TIME 时间参考可用时的信标采集状态
+- activateTimer = 1
+- 根据温度计算`beaconEventTime`
+
