@@ -291,10 +291,61 @@ ABP:Application session key,Network session key,DevAddr,NetworkID
 - 设置接收窗口C通道
 - 网络终端设备激活`MIB_NETWORK_ACTIVATION`
 
-
 ## 2.5 LoRaMac事件
 
+https://stackforce.github.io/LoRaMac-doc/LoRaMac-doc-v4.7.0/index.html
+
+
+
+>  一般来说，LoRaMAC层使用MCPS服务进行数据传输和接收，使用MLME服务对LoRaWAN网络进行管理。MIB负责保存重要的运行时信息，并保存LoRaMAC层的配置信息。
+>
+> `MCPS`（MAC Common Part Sublayer）：MAC公共部分子层 它主要负责数据的传输和接收
+>
+> MLME（MAC Layer Management Entity）：MAC层管理实体。它主要用于管理LoRaWAN网络。
+
+
+
+LoRa所有上下行链路消息都会携带PHY载荷，PHY载荷以1字节MAC头(MHDR)开始，紧接着MAC载荷(MACPayload)，最后是4字节的MAC校验码(MIC)。
+
+射频PHY层：
+<table>
+   <tr>
+      <td>Preamble</td>
+      <td>PHDR</td>
+      <td>PHDR_CRC</td>
+      <td bgcolor="#CCCCCC" >PHYPayload</td>
+      <td>CRC</td>
+   </tr>
+</table>
+图5.射频PHY结构(注意 CRC只有上行链路消息中存在)
+
+
+PHY载荷：
+<table>
+   <tr>
+      <td>MHDR</td>
+      <td bgcolor="#CCCCCC" >MACPayload</td>
+      <td>MIC</td>
+   </tr>
+</table>
+或者
+<table>
+   <tr>
+      <td>MHDR</td>
+      <td bgcolor="#CCCCCC" >Join-Request</td>
+      <td>MIC</td>
+   </tr>
+</table>
+或者
+<table>
+   <tr>
+      <td>MHDR</td>
+      <td bgcolor="#CCCCCC" >Join-Response</td>
+      <td>MIC</td>
+   </tr>
+</table>
 ### 2.5.1 LoRaMacInitialization
+
 - 验证该地区是否受支持
 - 确认队列重置
 - 初始化模块上下文
@@ -309,22 +360,647 @@ ABP:Application session key,Network session key,DevAddr,NetworkID
 - 随机种子初始化
 - 启用执行请求
 
-### 2.5.2 MAC IRQ 事件
+### 2.5.2 MAC IRQ 事件[查询处理]
 
 - 事件通过不同中断回调设置赋值
 
 #### 2.5.3.1 TxDone
+
 - 不是CLASS C,发送后进入睡眠模式
 - 设置RX窗口1,2定时器
 - CLASS C或者ACK包,设置ACK超时定时器
+- 设置`TimeCredits`
+`TimeCredits`是一个关键的参数，它代表了在特定频带上可用的`时间信用`。在LoRa网络中，为了遵守无线电频谱的公平使用规则，每个频带都有一个称为“占空比”的限制。这是一个规定了设备在特定时间内可以发送多少数据的规则。TimeCredits就是用来跟踪和管理这个占空比的。具体来说，每当设备在一个频带上发送数据时，它就会消耗一些TimeCredits。这个消耗的数量取决于发送的数据量和频带的占空比。如果TimeCredits足够，那么数据就可以被发送。如果TimeCredits不足，那么设备就需要等待一段时间，直到TimeCredits积累到足够的数量。因此，TimeCredits的主要作用是帮助设备遵守无线电频谱的使用规则，确保公平、有效地使用无线电资源。这对于LoRa这种长距离、低功耗的无线通信技术来说，是非常重要的。
+
 #### 2.5.3.2 RxDone
+
+1. 进入睡眠
+2. 如果在RX1接收完成,停止RX2定时器
+3. 获取header数据并根据Mtype进行不同处理
+
+```c
+macHdr.Value = payload[pktHeaderLen++];
+```
+4. 验证我们是否需要禁用 AckTimeoutTimer
+
+- 启用ACK请求,并且下行收到ACK,启用`OnAckTimeoutTimerEvent`
+- CLASS C,启用`OnAckTimeoutTimerEvent`
+- 用于结束ACK超时定时器
+
+##### 2.5.2.1 FRAME_TYPE_JOIN_ACCEPT
+
+1. size < `MHDR(1) + AppNonce(3) + NetID(3) + DevAddr(4) + DLSettings(1) + RxDelay(1) + MIC(4)` , 执行`PrepareRxDoneAbort`
+
+![image-20240507170956046](readme.assets/image-20240507170956046.png)
+
+2. 如果接收到的窗口无效，不在RX1或者RX2则中止
+
+3. 如果设备尚未连接，并且没有正在进行的重新连接请求，则中止
+
+4. 获取EUI 设置EUI在`LmHandlerConfigure`设置
+
+5. 处理加入接受消息。解密消息，验证 MIC，如果成功则派生会话密钥。
+
+6. 解密成功,获取netid,devaddr,dlsettings,rxdelay,cfList(可选) 设置mask信道掩码等信息
+
+7. MLME处理JOIN 验证请求是否在队列中并且处于活动状态  -> 设置元素状态JOIN成功  ->  否则设置JOIN失败
+
+
+| **MType** | 描述 |
+| --------- | ---- |
+| 000       |Join Request|
+| 001       |Join Accept|
+| 010       |Unconfirmed Data Up|
+| 011       |Unconfirmed Data Down|
+| 100       |Confirmed Data Up|
+| 101       |Confirmed Data Down|
+| 110       |RFU|
+| 111       |Proprietary|
+
+发送Join Request为  `00 01002A00C024E124 3802089E8024E124 A966 B6CBFCB3`.join-request 消息不用加密
+
+<table>
+   <tr>
+      <td><b>Size (bytes)</b></td>
+      <td>8</td>
+      <td>8</td>
+     <td>2</td>
+   </tr>
+   <tr>
+      <td><b>Join Request</b></td>
+      <td>AppEUI</td>
+      <td>DevEUI</td>
+     <td>DevNonce</td>
+   </tr>
+</table>
+
+
+join-request 消息包含了AppEUI 和 DevEUI ，后面还跟了2个字节的声明 DevNonce。
+
+
+DevNonce 是一个随机值。网络服务器为每个终端记录过去的 DevNonce 数值，如果相同设备发出相同的 DevNonce 的join request就会忽略。
+
+
+join-request 消息的MIC数值(见第4章 MAC帧格式)按照如下公式计算：
+
+
+> cmac = aes128_cmac(AppKey, MHDR | AppEUI | DevEUI | DevNonce)
+> MIC = cmac[0..3]
+
+- MHDR: 00 -> Major:0 RFU:0 MType:0 Join Request
+- AppEUI: 01002A00C024e124[小端] -> 24e124C0002A0001
+- DevEUI: 3802089E8024e124[小端] -> 24e124809E082038
+- DevNonce: A966
+- MIC: B6CBFCB3
+
+
+例如接收到的payload为`20 0000 1C0302 01B99EBC 06 08 01F604F8CF`.
+注意:网络服务器在 ECB 模式下使用一个 AES 解密操作去对 join-accept 消息进行加密，因此终端就可以使用一个 AES 加密操作去对消息进行解密。这样终端只需要去实现 AES 加密而不是 AES 解密。
+
+- MHDR: 20 -> Major:0 RFU:0 MType:2 Join Accept
+
+<table>
+   <tr>
+      <td><b>Size (bytes)</b></td>
+      <td>3</td>
+      <td>3</td>
+      <td>4</td>
+      <td>1</td>
+      <td>1</td>
+      <td>(16)Optional</td>
+   </tr>
+   <tr>
+      <td><b>Join Accpet</b></td>
+      <td>AppNonce</td>
+      <td>NetID</td>
+      <td>DevAddr</td>
+      <td>DLSettings</td>
+      <td>RXDelay</td>
+      <td>CFList</td>
+   </tr>
+</table>
+
+**AppNonce**是由网络服务器所提供的一个随机值或者某些形式的唯一ID，用于终端得到两个会话密钥**NwkSKey**和**AppSKey**，如下:
+
+    NwkSKey = aes128_encrypt(AppKey, 0x01 | AppNonce | NetID | DevNonce | pad 16 )
+    AppSKey = aes128_encrypt(AppKey, 0x02 | AppNonce | NetID | DevNonce | pad 16 )
+
+**join-accept**的 MIC 值由如下计算得到:
+
+    cmac = aes128_cmac(AppKey,MHDR | AppNonce | NetID | DevAddr | DLSettings | RxDelay | CFList) 
+    MIC = cmac[0..3]
+
+**join-accept**消息是使用**AppKey**进行加密的，如下:
+
+    aes128_decrypt(AppKey, AppNonce | NetID | DevAddr | DLSettings | RxDelay | CFList | MIC) 
+
+> 注意:网络服务器在 ECB 模式下使用一个 AES 解密操作去对 **join-accept** 消息进行加密，因此终端就可以使用一个 AES 加密操作去对消息进行解密。这样终端只需要去实现 AES 加密而不是 AES 解密。
+
+> 注意:建立这两个会话密钥使得 网络服务器 中的网络运营商无法窃听应用层数据。在这样的设置中，应用提供商必须支持网络运营商处理终端的加网以及为终端生成 NwkSkey。同时应用提供商向网络运营商承诺，它将承担终端所产生的任何流量费用并且保持用于保护应用数据的AppSKey的完全控制权。
+
+**NetID**的格式如下所述:**NetID**的7个最低有效位称为**NwkID**并且和之前所描述的终端的短地址的7个最高有效位相对应。保留的17个最高有效位可以由网络运营商进行自由选择。
+
+**DLsettings**字段包含了下行配置:
+
+<table>
+   <tr>
+      <td><b>Bits</b></td>
+      <td>7</td>
+      <td>6:4</td>
+      <td>3:0</td>
+   </tr>
+   <tr>
+      <td><b>DLsettings</b></td>
+      <td>RFU</td>
+      <td>RX1DRoffset</td>
+      <td>RX2 Data rate</td>
+   </tr>
+</table>
+
+**RX1DRoffset**位域设置上行数据速率和RX1下行数据速率的偏移量。默认情况下偏移量为0（意思就是上行数据速率与下行数据速率相等)。偏移量用于考虑一些地区的基站最大功率密度限制和平衡上下行射频链路预算。
+
+上行和下行的数据率之间的实际关系是由区域指定的，在LoRaWAN地区参数文件[PARAM]中进行定义。
+
+延时**RxDelay**和**RXTimingSetupReq**里的**Delay**字段有着相同的约定。
+
+##### 2.5.2.2 FRAME_TYPE_DATA_CONFIRMED_DOWN
+
+- McpsIndication = MCPS_CONFIRMED;
+- 转入`FRAME_TYPE_DATA_UNCONFIRMED_DOWN1`
+
+##### 2.5.2.3 FRAME_TYPE_DATA_UNCONFIRMED_DOWN
+
+1. `LoRaMacParserData`解析数据,错误退出
+2. `DetermineFrameType`确定帧类型
+
+> 对网络管理者而言，有一套专门的MAC命令用来在服务器和终端MAC层之间交互。这套MAC命令对应用程序或者应用服务器或者运行在终端设
+>
+> 备上的应用程序是不可见的。
+>
+> 单个数据帧中可以包含MAC命令序列，要么在FOpts字段中捎带，要么作为独立帧将**FPort**设成0后放在FRMPayload里。如果采用FOpts捎带的
+>
+> 方式，MAC命令不进行加密并且长度不能超过15字节。如果采用独立帧放在**FRMPayload**的方式，那就必须采用加密方式，并且不能超过
+>
+> **FRMPayload**的最大长度。
+
+```c
+	/* LoRaWAN规范允许几种可能的配置，如何建立数据上行/下行帧。为了清楚起见，应用了以下命名。请记住，这是特定于实现，因为在LoRaWAN规范中没有包含定义。
+     *
+     * X -> 字段可用
+     * - -> 字段不可用
+     *
+     * +-------+  +----------+------+-------+--------------+
+     * | FType |  | FOptsLen | Fopt | FPort |  FRMPayload  |
+     * +-------+  +----------+------+-------+--------------+
+     * |   A   |  |    > 0   |   X  |  > 0  |       X      |
+     * +-------+  +----------+------+-------+--------------+
+     * |   B   |  |   >= 0   |  X/- |   -   |       -      |
+     * +-------+  +----------+------+-------+--------------+
+     * |   C   |  |    = 0   |   -  |  = 0  | MAC commands |
+     * +-------+  +----------+------+-------+--------------+
+     * |   D   |  |    = 0   |   -  |  > 0  |       X      |
+     * +-------+  +----------+------+-------+--------------+
+     */
+```
+
+1. 检查是否是组播消息 -> 根据组播下行异常过滤报文
+2. 获取最大允许计数器差异,用于获取下行帧计数器值
+3. 解密消息
+4. 移除MAC命令
+5. 根据`fType`帧类型进行处理
+
+###### 2.5.2.3.1 FRAME_TYPE_A
+
+```c
+/* +----------+------+-------+--------------+
+* | FOptsLen | Fopt | FPort |  FRMPayload  |
+* +----------+------+-------+--------------+
+* |    > 0   |   X  |  > 0  |       X      |
+* +----------+------+-------+--------------+
+*/
+```
+
+- 解码MAC命令在FOpts字段 进行处理
+
+###### 2.5.2.3.2 FRAME_TYPE_B
+
+```c
+/* +----------+------+-------+--------------+
+* | FOptsLen | Fopt | FPort |  FRMPayload  |
+* +----------+------+-------+--------------+
+* |    > 0   |   X  |   -   |       -      |
+* +----------+------+-------+--------------+
+*/
+```
+
+- 解码MAC命令在FOpts字段 进行处理
+
+###### 2.5.2.3.3 FRAME_TYPE_C
+
+```c
+/* +----------+------+-------+--------------+
+ * | FOptsLen | Fopt | FPort |  FRMPayload  |
+ * +----------+------+-------+--------------+
+ * |    = 0   |   -  |  = 0  | MAC commands |
+ * +----------+------+-------+--------------+
+ */
+```
+
+- 解码FRMPayload中的MAC命令
+
+###### 2.5.2.3.4 FRAME_TYPE_D
+
+```c
+/* +----------+------+-------+--------------+
+ * | FOptsLen | Fopt | FPort |  FRMPayload  |
+ * +----------+------+-------+--------------+
+ * |    = 0   |   -  |  > 0  |       X      |
+ * +----------+------+-------+--------------+
+ */
+```
+
+- 没有 MAC 命令，只有应用程序负载
+
+##### 2.5.3.2.4 FRAME_TYPE_PROPRIETARY
+
+- LoRaMAC专有框架
+- 处理接收到的数据，将有效载荷复制到指定的缓冲区，并设置相关的状态和指示。
+
 #### 2.5.3.3 TxTimeout
-#### 2.5.3.4 RxError
-#### 2.5.3.5 RxTimeout
+
+- 非CLASS C,发送后进入睡眠模式
+- 更新`RxSlot`
+- 设置确认队列元素为超时
+调用`LoRaMacConfirmQueueSetStatusCmn`函数主要是为了更新LoRaWAN协议栈中的确认队列的状态。在LoRaWAN通信中，确认队列用于存储待确认的消息。每当有新的消息需要发送或接收时，都会在确认队列中添加一个元素。
+以下是一些可能需要调用此函数的情况：
+1. 当设备发送一个需要确认的消息时，会在确认队列中添加一个元素，并将其状态设置为待确认。
+2. 当设备接收到一个确认消息时，会找到确认队列中对应的元素，并将其状态更新为已确认。
+3. 当设备需要重发一个消息时，会找到确认队列中对应的元素，并将其状态更新为待重发。
+
+#### 2.5.3.4 RxError && RxTimeout
+
+- HandleRadioRxErrorTimeout
+- `非CLASSB`在RX1发生错误,ACK状态修改为超时或错误,为队列中的所有元素设置公共状态;经过时间超过RX2接收窗口,停止RX2定时器
+- RX2发生错误同逻辑处理
+- 更新`RxSlot`状态
+
+### 2.5.4 MacDone
+
+1. 关闭Request handing,不允许执行Request
+2. 清除`MacState`的``RX_ABORT`和`TX_RUNNING`
+3. 存在MLME 和 MCPS请求 -> 验证信标获取 MLME 请求是否处于待处理状态
+   1. noTx -> 执行`LoRaMacHandleMlmeRequest`和`LoRaMacHandleMcpsRequest`
+   2. 执行
+
+```c
+LoRaMacHandleRequestEvents( );
+LoRaMacHandleScheduleUplinkEvent( );
+LoRaMacEnableRequests( LORAMAC_REQUEST_HANDLING_ON );
+```
+
+4. LoRaMacHandleIndicationEvents
+
+#### 2.5.4.1 LoRaMacHandleMlmeRequest
+
+1. 验证``JOIN``是在队列中并且处于活动状态。
+   1. 节点加入成功 -> 上行链路消息重复计数器清零
+   2. 清除MACStae 的 TX_RUNNING
+2. 没有JOIN -> 存在`MLME_TXCW`或`MLME_TXCW1`清除TX_RUNNING
+
+#### 2.5.4.2 LoRaMacHandleMcpsRequest
+
+1. `MacState` = `LORAMAC_IDLE`才执行
+2. 具有`McpsReq` -> 执行 `McpsConfirm`
+
+- 复制信息从`mcpsConfirm`到`TxParams`
+- 执行`OnTxData`回调
+
+3. 具有`MlmeReq` -> 执行`MlmeConfirm`
+
+
+
+### 2.5.X LoRaMacParser
+
+#### 2.5.3.1 LoRaMacParserData
+
+图6.PHY载荷结构
+
+
+MAC载荷：
+<table>
+   <tr>
+      <td bgcolor="#CCCCCC" >FHDR</td>
+      <td>FPort</td>
+      <td>FRMPayload</td>
+   </tr>
+</table>
+图7.MAC载荷结构
+
+
+FHDR：
+<table>
+   <tr>
+      <td>DevAddr</td>
+      <td>FCtrl</td>
+      <td>FCnt</td>
+      <td>FOpts</td>
+   </tr>
+</table>
+
+
+- FHDR是由终端短地址(DevAddr)、1字节帧控制字节(FCtrl)、2字节帧计数器(FCnt)和用来传输MAC命令的帧选项(FOpts，最多15个字节)组成。
+
+<table>
+   <tr>
+      <td><b>Size(bytes)</b></td>   
+      <td>4</td>
+      <td>1</td>
+      <td>2</td>
+	  <td>0..15</td>
+   </tr>
+   <tr>
+      <td><b>FHDR</b></td>   
+      <td>DevAddr</td>
+      <td>FCtrl</td>
+      <td>FCnt</td>
+	  <td>FOpts</td>
+   </tr>
+</table>
+FCtrl在上下行消息中有所不同，下行消息如下：
+
+<table>
+   <tr>
+      <td><b>Bit#</b></td>   
+      <td>7</td>
+      <td>6</td>
+      <td>5</td>
+	  <td>4</td>
+	  <td>[3..0]</td>
+   </tr>
+   <tr>
+      <td><b>FCtrl bits</b></td>   
+      <td>ADR</td>
+      <td>ADRACKReq</td>
+      <td>ACK</td>
+	  <td>FPending</td>
+	  <td>FOptsLen</td>
+   </tr>
+</table>
+上行消息如下：
+
+<table>
+   <tr>
+      <td><b>Bit#</b></td>   
+      <td>7</td>
+      <td>6</td>
+      <td>5</td>
+	  <td>4</td>
+	  <td>[3..0]</td>
+   </tr>
+   <tr>
+      <td><b>FCtrl bits</b></td>   
+      <td>ADR</td>
+      <td>ADRACKReq</td>
+      <td>ACK</td>
+	  <td bgcolor="#CCCC00" >RFU</td>
+	  <td>FOptsLen</td>
+   </tr>
+</table>
+
+
+- 如果帧载荷字段不为空，端口字段必须体现出来。端口字段有体现时，若FPort的值为0表示FRMPayload只包含了MAC命令；具体见章节4.4中的MAC命令。  FPort的数值从1到223(0x01..0xDF)都是由应用层使用。  FPort的值从224到255(0xE0..0xFF)是保留用做未来的标准应用拓展。
+
+<table>
+   <tr>
+      <td><b>Size(bytes)</b></td>   
+      <td>7..23</td>
+      <td>0..1</td>
+      <td>0..N</td>
+   </tr>
+   <tr>
+      <td><b>MACPayload</b></td>   
+      <td>FHDR</td>
+      <td>FPort</td>
+      <td>FRMPayload</td>
+   </tr>
+</table>
+
+N是应用程序载荷的字节个数。N的有效范围具体在第7章有定义。
+
+N应该小于等于：
+N <= M - 1 - (FHDR长度)
+M是MAC载荷的最大长度。
+
+### 2.5.X ProcessMacCommands
+
+<table>
+   <tr>
+      <td rowspan="2" ><b>CID</b></td>
+      <td rowspan="2" ><b>Command</b></td>
+      <td colspan="2" ><b>由谁发送</b></td>
+      <td rowspan="2" ><b>描述</b></td>
+   </tr>
+   <tr>
+      <td>终端</td>
+      <td>网关</td>
+   </tr>
+   <tr>
+      <td>0x02</td>
+      <td>LinkCheckReq</td>
+      <td>x</td>
+      <td></td>
+      <td>终端利用这个命令来判断网络连接质量</td>
+   </tr>
+   <tr>
+      <td>0x02</td>
+      <td>LinkCheckAns</td>
+      <td></td>
+      <td>x</td>
+      <td>LinkCheckReq的回复。包含接收信号强度，告知终端接收质量</td>
+   </tr>
+   <tr>
+      <td>0x03</td>
+      <td>LinkADRReq</td>
+      <td></td>
+      <td>x</td>
+      <td>向终端请求改变数据速率，发射功率，重传率以及信道</td>
+   </tr>
+   <tr>
+      <td>0x03</td>
+      <td>LinkADRAns</td>
+      <td>x</td>
+      <td></td>
+      <td>LinkADRReq的回复。</td>
+   </tr>
+   <tr>
+      <td>0x04</td>
+      <td>DutyCycleReq</td>
+      <td></td>
+      <td>x</td>
+      <td>向终端设置发送的最大占空比。</td>
+   </tr>
+   <tr>
+      <td>0x04</td>
+      <td>DutyCycleAns</td>
+      <td>x</td>
+      <td></td>
+      <td>DutyCycleReq的回复。</td>
+   </tr>
+   <tr>
+      <td>0x05</td>
+      <td>RXParamSetupReq</td>
+      <td></td>
+      <td>x</td>
+      <td>向终端设置接收时隙参数。</td>
+   </tr>
+   <tr>
+      <td>0x05</td>
+      <td>RXParamSetupAns</td>
+      <td>x</td>
+      <td></td>
+      <td>RXParamSetupReq的回复。</td>
+   </tr>
+   <tr>
+      <td>0x06</td>
+      <td>DevStatusReq</td>
+      <td></td>
+      <td>x</td>
+      <td>向终端查询其状态。</td>
+   </tr>
+   <tr>
+      <td>0x06</td>
+      <td>DevStatusAns</td>
+      <td>x</td>
+      <td></td>
+      <td>返回终端设备的状态，即电池余量和链路解调预算。</td>
+   </tr>
+   <tr>
+      <td>0x07</td>
+      <td>NewChannelReq</td>
+      <td></td>
+      <td>x</td>
+      <td>创建或修改 1个射频信道 定义。</td>
+   </tr>
+   <tr>
+      <td>0x07</td>
+      <td>NewChannelAns</td>
+      <td>x</td>
+      <td></td>
+      <td>NewChannelReq的回复。</td>
+   </tr>
+   <tr>
+      <td>0x08</td>
+      <td>RXTimingSetupReq</td>
+      <td></td>
+      <td>x</td>
+      <td>设置接收时隙的时间。</td>
+   </tr>
+   <tr>
+      <td>0x08</td>
+      <td>RXTimingSetupAns</td>
+      <td>x</td>
+      <td></td>
+      <td>RXTimingSetupReq的回复。</td>
+   </tr>
+   <tr>
+      <td>0x09</td>
+      <td>TxParamSetupReq</td>
+      <td></td>
+      <td>x</td>
+      <td>网络服务器用于设置基于当地规定的终端的最大允许驻留时间和最大EIRP</td>
+   </tr>
+   <tr>
+      <td>0x09</td>
+      <td>TxParamSetupAns</td>
+      <td>x</td>
+      <td></td>
+      <td>TxParamSetupReq的回复。</td>
+   </tr>
+   <tr>
+      <td>0x0A</td>
+      <td>DlChannelReq</td>
+      <td></td>
+      <td>x</td>
+      <td>通过从上行链路频率移位下行链路频率（即创建非对称信道）来修改下行链路RX1无线电信道的定义</td>
+   </tr>
+   <tr>
+      <td>0x0A</td>
+      <td>DlChannelAns</td>
+      <td>x</td>
+      <td></td>
+      <td>DlChannelReq的回复。</td>
+   </tr>
+   <tr>
+      <td>0x80~0xFF</td>
+      <td>私有</td>
+      <td>x</td>
+      <td>x</td>
+      <td>给私有网络命令拓展做预留。</td>
+   </tr>
+</table>
+表4：MAC命令表
+
+#### 2.5.4.1 SRV_MAC_RESET_CONF 0x01
+
+#### 2.5.4.2 SRV_MAC_LINK_CHECK_ANS 0x02
+
+- LinkCheckReq的回复。包含接收信号强度，告知终端接收质量
+- 设置DemodMargin Demodulation margin. Contains the link margin [dB] of the last
+- 设置NbGateways  收到最后一次 LinkCheckReq 的网关数量
+
+通过LinkCheckReq命令，终端可以知道是否已连接上服务器。该命令没有载荷。
+
+当网络服务器通过一个或者多个网关接收到LinkCheckReq命令时，它会以LinkCheckAns命令进行回复。
+
+<table>
+   <tr>
+      <td><b>Size (bytes)</b></td>   
+      <td>1</td>   
+      <td>1</td>  
+   </tr>
+   <tr>
+      <td><b>LinkCheckAns Payload</b></td>
+      <td>Margin</td>
+      <td>GwCnt</td>
+   </tr>
+</table>
+
+解调预算(**Margin**)是一个范围为0~254的8位无符号整数，表示成功接收最新的**LinkCheckReq**命令的链路预算(单位为dB)。若 Margin 值为"0"则意味着数据帧是在解调水平上进行接收(0 dB或者没有预算)，当 Margin 值为"20"时则意味着数据帧到达在解调水平之上20dB的网关。
+
+网关计数(**GwCnt**)是成功接收最新的**LinkCheckReq**命令的网关个数。
+
+![image-20240509151155213](readme.assets/image-20240509151155213.png)
+
+- 该命令可以用于确认是否与网关保持连接
+
+#### 2.5.4.3 SRV_MAC_LINK_ADR_REQ 0x03
+
+- 根据地区处理ADR请求
+- 成功则进行`MOTE_MAC_LINK_ADR_ANS`MAC发送
+
+![image-20240509151142063](readme.assets/image-20240509151142063.png)
+
+#### 2.5.4.4 接收窗口参数 SRV_MAC_RX_PARAM_SETUP_REQ 0x05
+
+![image-20240509152253416](readme.assets/image-20240509152253416.png)
+
+#### 2.5.4.7 信道的创建和修改 SRV_MAC_NEW_CHANNEL_REQ 0x07
+
+![image-20240509152035395](readme.assets/image-20240509152035395.png)
+
+
+#### 2.5.4.11 SRV_MAC_DEVICE_TIME_ANS 0x0D
+
+![image-20240509152523916](readme.assets/image-20240509152523916.png)
+
+#### 2.5.4.4 其他未使用
+
 
 
 ## 2.6 Radio事件
+
 ### 2.6.1 初始化
+
 - 注册回调事件
 - RadioInit
   
@@ -393,6 +1069,18 @@ MacCtx.RadioEvents.TxDone
   - 进入中断,中断触发源都为0,认为异常
   - 1000次异常,关闭中断,发送错误标志
 - 正常只进行中断回调处理
+
+## 2.7 LmHandler
+
+### 2.7.1 MlmeConfirm
+
+#### 2.7.1.1 MLME_JOIN
+
+1. 获取DevAddr
+2. 设置当前数据速率
+3. 更改CLASS类型
+
+
 
 # 3. module lora
 
